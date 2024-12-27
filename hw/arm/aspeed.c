@@ -210,6 +210,10 @@ struct AspeedMachineState {
 #define AST_SMP_MBOX_CODE               (AST_SMP_MAILBOX_BASE + 0x10)
 #define AST_SMP_MBOX_GOSIGN             0xabbaab00
 
+/* Ampere DC-SCM hardware value */
+#define AMPERE_MITCHEL_BMC_HW_STRAP1    0x00000000
+#define AMPERE_MITCHEL_BMC_HW_STRAP2    0x00000000
+
 static void aspeed_write_smpboot(ARMCPU *cpu,
                                  const struct arm_boot_info *info)
 {
@@ -1115,6 +1119,53 @@ static void qcom_dc_scm_firework_i2c_init(AspeedMachineState *bmc)
     i2c_slave_create_simple(aspeed_i2c_get_bus(&soc->i2c, 9), "max31785", 0x54);
 }
 
+
+static void ampere_mitchell_dc_scm_i2c_init(AspeedMachineState *bmc)
+{
+    AspeedSoCState *soc = bmc->soc;
+    I2CSlave *therm_mux, *ocp_mux, *riser0_mux, *riser1_mux, *backplane_mux;
+
+    /* I2C4 Thermal Diodes*/
+    therm_mux = i2c_slave_create_simple(aspeed_i2c_get_bus(&soc->i2c, 4),
+                                        "pca9546", 0x70);
+    i2c_slave_create_simple(pca954x_i2c_get_bus(therm_mux, 0), TYPE_TMP75, 0x48);
+    i2c_slave_create_simple(pca954x_i2c_get_bus(therm_mux, 0), TYPE_TMP75, 0x49);
+    i2c_slave_create_simple(pca954x_i2c_get_bus(therm_mux, 1), TYPE_TMP75, 0x48);
+    i2c_slave_create_simple(pca954x_i2c_get_bus(therm_mux, 1), TYPE_TMP75, 0x49);
+    i2c_slave_create_simple(pca954x_i2c_get_bus(therm_mux, 2), TYPE_TMP75, 0x48);
+    i2c_slave_create_simple(pca954x_i2c_get_bus(therm_mux, 2), TYPE_TMP75, 0x49);
+    i2c_slave_create_simple(pca954x_i2c_get_bus(therm_mux, 3), "emc1413", 0x7C);
+    i2c_slave_create_simple(pca954x_i2c_get_bus(therm_mux, 3), "emc1413", 0x4C);
+
+    at24c_eeprom_init(aspeed_i2c_get_bus(&soc->i2c, 4), 0x50, 128 * KiB);
+
+    /* I2C5 Riser cards*/
+    ocp_mux = i2c_slave_create_simple(aspeed_i2c_get_bus(&soc->i2c, 5),
+                                        "pca9548", 0x70);
+    i2c_slave_create_simple(pca954x_i2c_get_bus(ocp_mux, 0), "tmp421", 0x1f);
+    i2c_slave_create_simple(pca954x_i2c_get_bus(ocp_mux, 1), "tmp421", 0x1f);
+    riser0_mux = i2c_slave_create_simple(pca954x_i2c_get_bus(ocp_mux, 2), "pca9546", 0x72);
+    at24c_eeprom_init(pca954x_i2c_get_bus(riser0_mux, 0), 0x50, 128 * KiB);
+    riser1_mux = i2c_slave_create_simple(pca954x_i2c_get_bus(ocp_mux, 3), "pca9546", 0x72);
+    at24c_eeprom_init(pca954x_i2c_get_bus(riser1_mux, 0), 0x50, 128 * KiB);
+
+    /* I2C8 Fan Controller (MAX31785) */
+    i2c_slave_create_simple(aspeed_i2c_get_bus(&soc->i2c, 8), "max31785", 0x20);
+    i2c_slave_create_simple(aspeed_i2c_get_bus(&soc->i2c, 8), "max31785", 0x2F);
+
+    /* I2C9 NVME BP*/
+    backplane_mux = i2c_slave_create_simple(aspeed_i2c_get_bus(&soc->i2c, 9),
+                                        "pca9548", 0x70);
+    i2c_slave_create_simple(pca954x_i2c_get_bus(backplane_mux, 0), TYPE_TMP75, 0x4C);
+    i2c_slave_create_simple(pca954x_i2c_get_bus(backplane_mux, 2), TYPE_TMP75, 0x4C);
+    i2c_slave_create_simple(pca954x_i2c_get_bus(backplane_mux, 4), TYPE_TMP75, 0x4C);
+
+    /* I2C14 SCM FRU */
+    i2c_slave_create_simple(aspeed_i2c_get_bus(&soc->i2c, 14), "tmp105", 0x35);
+    at24c_eeprom_init(aspeed_i2c_get_bus(&soc->i2c, 14), 0x50, 128 * KiB);
+}
+
+
 static bool aspeed_get_mmio_exec(Object *obj, Error **errp)
 {
     return ASPEED_MACHINE(obj)->mmio_exec;
@@ -1742,6 +1793,24 @@ static void aspeed_machine_qcom_firework_class_init(ObjectClass *oc,
     aspeed_machine_class_init_cpus_defaults(mc);
 };
 
+static void aspeed_machine_mitchel_class_init(ObjectClass *oc, void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+    AspeedMachineClass *amc = ASPEED_MACHINE_CLASS(oc);
+
+    mc->desc = "Ampere DC-SCM Mt.Mitchel BMC (Cortex-A7)";
+    amc->soc_name  = "ast2600-a3";
+    amc->hw_strap1 = AMPERE_MITCHEL_BMC_HW_STRAP1;
+    amc->hw_strap2 = AMPERE_MITCHEL_BMC_HW_STRAP2;
+    amc->fmc_model = "mx66l51235f";
+    amc->spi_model = "mx66l51235f";
+    amc->num_cs    = 2;
+    amc->macs_mask = ASPEED_MAC0_ON | ASPEED_MAC1_ON | ASPEED_MAC3_ON;
+    amc->i2c_init  = ampere_mitchell_dc_scm_i2c_init;
+    mc->default_ram_size = 1 * GiB;
+    aspeed_machine_class_init_cpus_defaults(mc);
+}
+
 static const TypeInfo aspeed_machine_types[] = {
     {
         .name          = MACHINE_TYPE_NAME("palmetto-bmc"),
@@ -1819,6 +1888,10 @@ static const TypeInfo aspeed_machine_types[] = {
         .name          = MACHINE_TYPE_NAME("fby35-bmc"),
         .parent        = MACHINE_TYPE_NAME("ast2600-evb"),
         .class_init    = aspeed_machine_fby35_class_init,
+    }, {
+        .name          = MACHINE_TYPE_NAME("ampere_mitchel-bmc"),
+        .parent        = TYPE_ASPEED_MACHINE,
+        .class_init    = aspeed_machine_mitchel_class_init,
     }, {
         .name           = MACHINE_TYPE_NAME("ast1030-evb"),
         .parent         = TYPE_ASPEED_MACHINE,
